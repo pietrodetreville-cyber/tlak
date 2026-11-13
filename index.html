@@ -52,8 +52,8 @@ td button{padding:4px 10px;background:transparent;color:var(--mut);border:1px so
   <label class="note" for="cam" style="display:block;margin-top:10px;text-align:center;text-decoration:underline">nebo vybrat hotovou fotku</label>
   <input id="cam" type="file" accept="image/*" class="hide">
   <div id="status"></div>
-  <canvas id="dbg" style="max-width:100%;border-radius:10px;margin-top:6px;display:none"></canvas>
   <canvas id="preview" style="max-width:100%;border-radius:10px;margin-top:10px;display:none"></canvas>
+  <canvas id="dbg" style="max-width:100%;border-radius:10px;margin-top:6px;display:none"></canvas>
 </div>
 
 <div id="vf" class="hide">
@@ -259,17 +259,19 @@ $('shot').onclick = () => {
   const v = $('video'), vw = v.videoWidth, vh = v.videoHeight, c = v.getBoundingClientRect(), f = $('frame').getBoundingClientRect();
   const k = Math.max(c.width / vw, c.height / vh), ox = (vw * k - c.width) / 2, oy = (vh * k - c.height) / 2;
   const sx = (f.left - c.left + ox) / k, sy = (f.top - c.top + oy) / k, sw = f.width / k, sh = f.height / k;
-  closeVf();
-  // zkusí rámeček i o něco větší a menší; první rozumný výsledek vyhrává
-  let first = null;
+  // snímky se musí sejmout, dokud foťák běží; teprve potom ho zavřeme
+  const shots = [];
   for (const z of [1, 1.2, 0.85, 1.4]) {
     const cx = sx + sw / 2, cy = sy + sh / 2, zw = sw * z, zh = sh * z;
     const out = Math.min(900, Math.round(zw)), cv = document.createElement('canvas');
     cv.width = out; cv.height = Math.round(out * zh / zw);
     cv.getContext('2d').drawImage(v, cx - zw / 2, cy - zh / 2, zw, zh, 0, 0, cv.width, cv.height);
-    if (!first) first = cv;
-    if (!aiKey() && plausible(readCanvas(cv).vals)) { showResult(cv); return; }
+    shots.push(cv);
   }
+  closeVf();
+  // první rozumný výsledek vyhrává; s AI se posílá první snímek
+  if (!aiKey()) for (const cv of shots) if (plausible(readCanvas(cv).vals)) { showResult(cv); return; }
+  const first = shots[0];
   showResult(first);
 };
 // hotová fotka: zkusí celý snímek i několik výřezů
@@ -296,7 +298,7 @@ $('aikey').value = aiKey();
 const aiState = () => { $('aistate').textContent = aiKey() ? '· klíč uložen, AI zapnutá' : '· vypnuto (chybí klíč)'; };
 aiState();
 $('aisave').onclick = () => { try { localStorage.setItem('tlak.aikey', $('aikey').value.trim()); aiState(); $('aisave').textContent = 'Uloženo ✓'; setTimeout(() => $('aisave').textContent = 'Uložit klíč', 1500); } catch (e) {} };
-const VERSION = 9;
+const VERSION = 10;
 $('ver').textContent = 'verze ' + VERSION;
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').then(reg => {
