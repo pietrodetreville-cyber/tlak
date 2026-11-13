@@ -1,6 +1,6 @@
-// Offline: appka i rozpoznávač (stažený při prvním použití) se uloží do cache.
-const CACHE = 'tlak-v1';
-const SHELL = ['./', 'index.html', 'manifest.webmanifest', 'icon.svg'];
+// Offline: appka se uloží do cache.
+const CACHE = 'tlak-v2';
+const SHELL = ['./', 'index.html', 'seg7.js', 'manifest.webmanifest', 'icon.svg'];
 self.addEventListener('install', e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())));
 self.addEventListener('activate', e => e.waitUntil(
   caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())));

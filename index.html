@@ -31,6 +31,13 @@ table{width:100%;border-collapse:collapse;font-size:.92rem}
 th,td{padding:8px 4px;border-bottom:1px solid var(--line);text-align:left}
 td.n{font-weight:700;white-space:nowrap}
 td button{padding:4px 10px;background:transparent;color:var(--mut);border:1px solid var(--line);font-weight:400}
+#vf{position:fixed;inset:0;background:#000;z-index:10}
+#vf.hide{display:none}
+#vf video{width:100%;height:100%;object-fit:cover}
+#frame{position:absolute;left:50%;top:44%;width:78vmin;height:78vmin;transform:translate(-50%,-50%);border:3px solid #fff;border-radius:14px;box-shadow:0 0 0 100vmax rgba(0,0,0,.55)}
+#hint{position:absolute;left:0;right:0;top:calc(44% - 39vmin - 40px);text-align:center;color:#fff;font-weight:600}
+#bar{position:absolute;left:16px;right:16px;bottom:calc(24px + env(safe-area-inset-bottom));display:flex;gap:12px}
+#bar button{flex:1}#bar .sec{color:#fff;border-color:#fff8}
 .note{color:var(--mut);font-size:.82rem}
 .hide{display:none}
 </style>
@@ -40,10 +47,18 @@ td button{padding:4px 10px;background:transparent;color:var(--mut);border:1px so
 <h1>Tlak</h1>
 
 <div class="card">
-  <label class="btn big" for="cam" style="display:block">📷 Vyfotit tonometr</label>
-  <input id="cam" type="file" accept="image/*" capture="environment" class="hide">
+  <button class="big" id="open" type="button">📷 Vyfotit displej</button>
+  <label class="note" for="cam" style="display:block;margin-top:10px;text-align:center;text-decoration:underline">nebo vybrat hotovou fotku</label>
+  <input id="cam" type="file" accept="image/*" class="hide">
   <div id="status"></div>
-  <img id="preview" alt="">
+  <canvas id="preview" style="max-width:100%;border-radius:10px;margin-top:10px;display:none"></canvas>
+</div>
+
+<div id="vf" class="hide">
+  <video id="video" playsinline muted></video>
+  <div id="frame"></div>
+  <div id="hint">Displej vyplň do rámečku</div>
+  <div id="bar"><button class="sec" id="vfclose" type="button">Zavřít</button><button id="shot" type="button">Vyfotit</button></div>
 </div>
 
 <form id="form" class="card">
@@ -72,7 +87,7 @@ td button{padding:4px 10px;background:transparent;color:var(--mut);border:1px so
 </div>
 </main>
 
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script src="seg7.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const KEY = 'tlak.records.v1';
@@ -135,75 +150,60 @@ $('export').onclick = () => {
 };
 
 // ---------- čtení z fotky ----------
-function loadImage(file) {
-  return new Promise((res, rej) => {
-    const url = URL.createObjectURL(file), img = new Image();
-    img.onload = () => res({ img, url }); img.onerror = rej; img.src = url;
-  });
+function readCanvas(cv) {
+  const x = cv.getContext('2d', { willReadFrequently: true }), d = x.getImageData(0, 0, cv.width, cv.height).data;
+  const g = new Uint8Array(cv.width * cv.height);
+  for (let i = 0; i < g.length; i++) g[i] = (d[i*4]*0.299 + d[i*4+1]*0.587 + d[i*4+2]*0.114) | 0;
+  return Seg7.read(g, cv.width, cv.height);
 }
-// zmenšení + šedá + roztažení kontrastu; invert = světlé číslice na tmavém
-function prep(img, invert) {
-  const max = 1400, k = Math.min(1, max / Math.max(img.width, img.height));
-  const c = document.createElement('canvas');
-  c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
-  const x = c.getContext('2d', { willReadFrequently: true });
-  x.drawImage(img, 0, 0, c.width, c.height);
-  const d = x.getImageData(0, 0, c.width, c.height), p = d.data, g = new Uint8Array(p.length / 4);
-  const hist = new Uint32Array(256);
-  for (let i = 0; i < g.length; i++) { const v = (p[i*4]*0.299 + p[i*4+1]*0.587 + p[i*4+2]*0.114) | 0; g[i] = v; hist[v]++; }
-  const cut = g.length * 0.02; let lo = 0, hi = 255, s = 0;
-  for (; lo < 255; lo++) { s += hist[lo]; if (s > cut) break; }
-  s = 0; for (; hi > 0; hi--) { s += hist[hi]; if (s > cut) break; }
-  const span = Math.max(1, hi - lo);
-  for (let i = 0; i < g.length; i++) {
-    let v = Math.max(0, Math.min(255, (g[i] - lo) * 255 / span)); if (invert) v = 255 - v;
-    p[i*4] = p[i*4+1] = p[i*4+2] = v;
+const plausible = v => v && v.every((n, i) => n >= [60, 30, 30][i] && n <= [280, 200, 250][i]);
+function showResult(cv) {
+  const p = $('preview'); p.width = cv.width; p.height = cv.height; p.getContext('2d').drawImage(cv, 0, 0); p.style.display = 'block';
+  const r = readCanvas(cv), st = $('status');
+  if (plausible(r.vals)) {
+    [$('sys').value, $('dia').value, $('pul').value] = r.vals; checkWarn();
+    st.textContent = 'Přečteno. Zkontroluj čísla podle fotky a ulož.';
+  } else {
+    st.textContent = 'Čísla se nepodařilo přečíst. Vyfoť displej zblízka, rovně a bez odlesků, nebo čísla opiš ručně.';
   }
-  x.putImageData(d, 0, 0);
-  return c;
-}
-function pick(words) {
-  // čísla v rozumném rozsahu, seřazená odshora dolů (Omron: horní, dolní, tep)
-  const nums = words.map(w => ({ t: w.text.replace(/\D/g, ''), y: (w.bbox.y0 + w.bbox.y1) / 2, h: w.bbox.y1 - w.bbox.y0 }))
-    .filter(w => w.t.length >= 2 && w.t.length <= 3 && +w.t >= 30 && +w.t <= 260);
-  if (!nums.length) return null;
-  const hMax = Math.max(...nums.map(n => n.h));
-  const big = nums.filter(n => n.h > hMax * 0.45).sort((a, b) => a.y - b.y);
-  return big.length >= 3 ? big.slice(0, 3).map(n => +n.t) : null;
 }
 
-let worker = null;
-$('cam').addEventListener('change', async e => {
-  const file = e.target.files[0]; e.target.value = '';
-  if (!file) return;
-  const st = $('status');
+let stream = null;
+function closeVf() { if (stream) stream.getTracks().forEach(t => t.stop()); stream = null; $('vf').classList.add('hide'); }
+$('open').onclick = async () => {
   try {
-    st.textContent = 'Načítám fotku…';
-    const { img, url } = await loadImage(file);
-    $('preview').src = url; $('preview').style.display = 'block';
-    if (!window.Tesseract) throw new Error('offline');
-    st.textContent = 'Čtu čísla… (poprvé to chvíli trvá, stahuje se rozpoznávač)';
-    if (!worker) {
-      worker = await Tesseract.createWorker('eng');
-      await worker.setParameters({ tessedit_char_whitelist: '0123456789', tessedit_pageseg_mode: '11' });
-    }
-    let found = null;
-    for (const inv of [false, true]) {
-      const { data } = await worker.recognize(prep(img, inv));
-      found = pick(data.words || []);
-      if (found) break;
-    }
-    if (found) {
-      [$('sys').value, $('dia').value, $('pul').value] = found; checkWarn();
-      st.textContent = 'Přečteno. Zkontroluj čísla podle fotky a ulož.';
-    } else {
-      st.textContent = 'Čísla se nepodařilo spolehlivě přečíst. Zkus fotku zblízka a bez odlesků, nebo je opiš ručně.';
-    }
-  } catch (err) {
-    st.textContent = err.message === 'offline'
-      ? 'Rozpoznávání vyžaduje při prvním spuštění internet. Čísla zatím zadej ručně.'
-      : 'Fotku se nepodařilo zpracovat. Zadej čísla ručně.';
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+    $('video').srcObject = stream; await $('video').play(); $('vf').classList.remove('hide');
+  } catch (e) {
+    closeVf(); $('status').textContent = 'Foťák se nepodařilo spustit. Povol ho v prohlížeči, nebo vyber hotovou fotku.';
   }
+};
+$('vfclose').onclick = closeVf;
+$('shot').onclick = () => {
+  const v = $('video'), vw = v.videoWidth, vh = v.videoHeight, c = v.getBoundingClientRect(), f = $('frame').getBoundingClientRect();
+  const k = Math.max(c.width / vw, c.height / vh), ox = (vw * k - c.width) / 2, oy = (vh * k - c.height) / 2;
+  const sx = (f.left - c.left + ox) / k, sy = (f.top - c.top + oy) / k, sw = f.width / k, sh = f.height / k;
+  const out = Math.min(600, Math.round(sw)), cv = document.createElement('canvas');
+  cv.width = out; cv.height = Math.round(out * sh / sw);
+  cv.getContext('2d').drawImage(v, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
+  closeVf(); showResult(cv);
+};
+// hotová fotka: zkusí celý snímek i několik výřezů
+$('cam').addEventListener('change', async e => {
+  const file = e.target.files[0]; e.target.value = ''; if (!file) return;
+  try {
+    const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }), k = Math.min(1, 1200 / Math.max(bmp.width, bmp.height));
+    const W = Math.round(bmp.width * k), H = Math.round(bmp.height * k);
+    const full = document.createElement('canvas'); full.width = W; full.height = H; full.getContext('2d').drawImage(bmp, 0, 0, W, H);
+    const tries = [[0, 0, 1, 1]];
+    for (const s of [0.7, 0.5, 0.35]) for (const cy of [0.35, 0.5, 0.65]) for (const cx of [0.35, 0.5, 0.65]) tries.push([cx - s / 2, cy - s / 2, s, s]);
+    for (const [fx, fy, fw, fh] of tries) {
+      const cv = document.createElement('canvas'); cv.width = Math.round(W * fw); cv.height = Math.round(H * fh);
+      cv.getContext('2d').drawImage(full, W * fx, H * fy, cv.width, cv.height, 0, 0, cv.width, cv.height);
+      if (plausible(readCanvas(cv).vals)) { showResult(cv); return; }
+    }
+    showResult(full);
+  } catch (err) { $('status').textContent = 'Fotku se nepodařilo zpracovat. Zadej čísla ručně.'; }
 });
 
 render();
