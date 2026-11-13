@@ -55,7 +55,9 @@ nav button.on{background:var(--acc);color:var(--acc-fg)}
 .stats div{background:var(--bg);border-radius:10px;padding:8px;text-align:center}
 .stats b{display:block;font-size:1.2rem}
 #tip{min-height:2.6em;font-size:.9rem;margin-top:6px}
-td.ph{width:44px;text-align:right}
+td.ph{text-align:right;white-space:nowrap}
+td.ph button+button{margin-left:4px}
+.dellist{font-size:.85rem;margin:6px 0 0;padding-left:18px;color:var(--mut)}
 td.ph button{padding:4px 8px;font-size:1rem}
 #big.hide{display:none}
 #big{position:fixed;inset:0;background:#000d;z-index:20;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:16px;gap:10px}
@@ -114,7 +116,7 @@ td.ph button{padding:4px 8px;font-size:1rem}
   <table><thead><tr><th>Kdy</th><th>Tlak</th><th>Tep</th><th></th></tr></thead><tbody id="list"></tbody></table>
   <p class="note" id="empty">Zatím nic. Vyfoť displej nebo čísla zadej ručně.</p>
 
-  <p class="note">Uložené záznamy už nejdou mazat. Data jsou jen v tomto telefonu, proto občas stáhni export (CSV) jako zálohu. Otevřeš ho v Excelu.</p>
+  <p class="note">Záznamy může mazat jen správce (záložka Správa) a každé smazání se zapíše do přehledu. Data jsou jen v tomto telefonu, proto občas stáhni export (CSV) jako zálohu. Otevřeš ho v Excelu.</p>
 </div>
 </section>
 
@@ -134,6 +136,16 @@ td.ph button{padding:4px 8px;font-size:1rem}
   <label for="aikey">API klíč Gemini</label><input id="aikey" type="password" autocomplete="off" placeholder="AIza…">
   <div class="row" style="margin-top:8px"><button type="button" id="aisave" class="sec">Uložit klíč</button></div>
 </div>
+  <div class="card">
+    <strong>Správce</strong>
+    <p class="note">Mazání záznamů je chráněné PINem. Odemčení se po 5 minutách nebo opuštění appky samo zamkne.</p>
+    <div id="adm-set"><label for="pin-new">Nastav si PIN (aspoň 4 číslice)</label><input id="pin-new" type="password" inputmode="numeric" autocomplete="off"><div class="row" style="margin-top:8px"><button class="sec" id="pin-set" type="button">Nastavit PIN</button></div></div>
+    <div id="adm-lock" class="hide"><label for="pin-in">PIN správce</label><input id="pin-in" type="password" inputmode="numeric" autocomplete="off"><div class="row" style="margin-top:8px"><button class="sec" id="pin-go" type="button">Odemknout</button></div></div>
+    <div id="adm-on" class="hide"><p style="margin:6px 0"><strong>Režim správce je zapnutý.</strong> V seznamu měření jsou tlačítka 🗑.</p><button class="sec" id="pin-off" type="button">Zamknout</button></div>
+    <div id="adm-msg" class="warn"></div>
+    <strong style="display:block;margin-top:12px">Smazané záznamy (<span id="del-count">0</span>)</strong>
+    <ol id="deleted" class="dellist"></ol>
+  </div>
   <div class="card">
     <strong>Data</strong>
     <p class="note">Záznamy a fotky měření jsou jen v tomto telefonu. K každému uloženému měření se uchovává fotka displeje s časem pořízení. Excelový export fotky neobsahuje, jen hodnoty.</p>
@@ -160,7 +172,7 @@ function render() {
   const sorted = [...records].sort((a, b) => b.when.localeCompare(a.when));
   $('list').innerHTML = sorted.map(r =>
     `<tr><td>${fmt(r.when)}${r.note ? `<div class="note">${esc(r.note)}</div>` : ''}</td>
-     <td class="n">${r.sys}/${r.dia}</td><td class="n">${r.pul}</td><td class="ph">${r.photo ? `<button class="sec" data-photo="${r.id}" aria-label="Zobrazit fotku">📷</button>` : ''}</td></tr>`).join('');
+     <td class="n">${r.sys}/${r.dia}</td><td class="n">${r.pul}</td><td class="ph">${r.photo ? `<button class="sec" data-photo="${r.id}" aria-label="Zobrazit fotku">📷</button>` : ''}${admin ? `<button class="sec" data-del="${r.id}" aria-label="Smazat záznam">🗑</button>` : ''}</td></tr>`).join('');
   renderChart();
   $('count').textContent = records.length;
   $('empty').style.display = records.length ? 'none' : '';
@@ -231,6 +243,40 @@ $('export').onclick = () => {
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 };
+
+// ---------- správce ----------
+const PINK = 'tlak.pin.v1', DELK = 'tlak.deleted.v1';
+let admin = false, adminTimer = null, deleted = [];
+try { deleted = JSON.parse(localStorage.getItem(DELK) || '[]'); } catch (e) {}
+const sha = async s => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode('tlak:' + s)))].map(b => b.toString(16).padStart(2, '0')).join('');
+function adminUI(msg) {
+  const has = !!lsGet(PINK);
+  $('adm-set').classList.toggle('hide', has); $('adm-lock').classList.toggle('hide', !has || admin); $('adm-on').classList.toggle('hide', !admin);
+  $('adm-msg').textContent = msg || '';
+  $('del-count').textContent = deleted.length;
+  $('deleted').innerHTML = deleted.slice().reverse().map(d => '<li>' + fmt(d.when) + ' · ' + d.sys + '/' + d.dia + ', tep ' + d.pul + (d.note ? ' (' + esc(d.note) + ')' : '') + ' · smazáno ' + fmt(new Date(d.deletedAt).toISOString()) + '</li>').join('');
+  render();
+}
+function lockAdmin() { admin = false; clearTimeout(adminTimer); adminUI(); }
+$('pin-set').onclick = async () => {
+  const p = $('pin-new').value.trim();
+  if (!/^\d{4,}$/.test(p)) return adminUI('PIN musí mít aspoň 4 číslice.');
+  lsSet(PINK, await sha(p)); $('pin-new').value = ''; adminUI('PIN nastaven.');
+};
+$('pin-go').onclick = async () => {
+  const p = $('pin-in').value.trim(); $('pin-in').value = '';
+  if (await sha(p) !== lsGet(PINK)) return adminUI('Špatný PIN.');
+  admin = true; clearTimeout(adminTimer); adminTimer = setTimeout(lockAdmin, 300000); adminUI();
+};
+$('pin-off').onclick = lockAdmin;
+document.addEventListener('visibilitychange', () => { if (document.hidden && admin) lockAdmin(); });
+$('list').addEventListener('click', e => {
+  const id = e.target.dataset.del; if (!id || !admin) return;
+  const r = records.find(x => x.id === id); if (!r) return;
+  if (!confirm('Smazat měření ' + r.sys + '/' + r.dia + ', tep ' + r.pul + ' z ' + fmt(r.when) + '? Smazání se zapíše do přehledu.')) return;
+  deleted.push({ ...r, deletedAt: Date.now() }); lsSet(DELK, JSON.stringify(deleted));
+  records = records.filter(x => x.id !== id); save(); adminUI();
+});
 
 // ---------- záložky ----------
 let tab = 'mer';
@@ -447,9 +493,9 @@ $('aikey').value = aiKey();
 const aiState = () => { $('aistate').textContent = aiKey() ? '· klíč uložen, AI zapnutá' : '· vypnuto (chybí klíč)'; };
 aiState();
 $('aisave').onclick = () => { try { localStorage.setItem('tlak.aikey', $('aikey').value.trim()); aiState(); $('aisave').textContent = 'Uloženo ✓'; setTimeout(() => $('aisave').textContent = 'Uložit klíč', 1500); } catch (e) {} };
-const VERSION = 14;
+const VERSION = 15;
 if (navigator.storage && navigator.storage.estimate) navigator.storage.estimate().then(s => { $('storeinfo').textContent = 'Zabráno ' + (s.usage / 1048576).toFixed(1) + ' MB z asi ' + Math.round(s.quota / 1048576) + ' MB dostupných.'; }).catch(() => {});
-$('ver').textContent = 'verze ' + VERSION; $('ver2').textContent = 'verze ' + VERSION;
+$('ver').textContent = 'verze ' + VERSION; adminUI(); $('ver2').textContent = 'verze ' + VERSION;
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').then(reg => {
     const offer = w => { $('upd').classList.remove('hide'); $('updgo').onclick = () => w.postMessage('skip'); };
