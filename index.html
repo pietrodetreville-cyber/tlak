@@ -85,6 +85,11 @@ td button{padding:4px 10px;background:transparent;color:var(--mut);border:1px so
   </div>
   <table><thead><tr><th>Kdy</th><th>Tlak</th><th>Tep</th><th></th></tr></thead><tbody id="list"></tbody></table>
   <p class="note" id="empty">Zatím nic. Vyfoť displej nebo čísla zadej ručně.</p>
+  <details class="card" style="margin-top:14px"><summary><strong>Nastavení: AI čtení (nepovinné)</strong></summary>
+  <p class="note">Když místní čtení selže, appka může fotku poslat k přečtení službě Google Gemini. Klíč zdarma získáš na aistudio.google.com/apikey a vložíš ho sem. Uloží se jen v tomto telefonu. Fotka displeje se pak odešle Googlu.</p>
+  <label for="aikey">API klíč Gemini</label><input id="aikey" type="password" autocomplete="off" placeholder="AIza…">
+  <div class="row" style="margin-top:8px"><button type="button" id="aisave" class="sec">Uložit klíč</button></div>
+</details>
   <p class="note">Data jsou jen v tomto telefonu. Export (CSV) otevřeš v Excelu. Doporučuju ho čas od času stáhnout jako zálohu.</p>
 </div>
 </main>
@@ -151,6 +156,39 @@ $('export').onclick = () => {
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 };
 
+// ---------- AI (Google Gemini, vlastní klíč v telefonu) ----------
+const aiKey = () => { try { return localStorage.getItem('tlak.aikey') || ''; } catch (e) { return ''; } };
+async function aiRead(cv) {
+  const b64 = cv.toDataURL('image/jpeg', 0.9).split(',')[1];
+  const body = { contents: [{ parts: [
+    { text: 'Na fotce je displej domácího tonometru (krevní tlak). Přečti tři čísla: horní tlak (SYS), dolní tlak (DIA) a tep (PULSE). Odpověz jen JSON {"sys":číslo,"dia":číslo,"pulse":číslo}. Když číslo nejde spolehlivě přečíst, dej null.' },
+    { inline_data: { mime_type: 'image/jpeg', data: b64 } }] }],
+    generationConfig: { responseMimeType: 'application/json', temperature: 0 } };
+  let lastErr;
+  for (const model of ['gemini-flash-latest', 'gemini-2.5-flash']) {
+    const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': aiKey() }, body: JSON.stringify(body) });
+    if (r.status === 404) { lastErr = new Error('model'); continue; }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json(), t = j.candidates && j.candidates[0] && j.candidates[0].content.parts.map(p => p.text || '').join('');
+    const o = JSON.parse(t.replace(/```json|```/g, ''));
+    return [o.sys, o.dia, o.pulse].map(Number);
+  }
+  throw lastErr;
+}
+async function tryAi(cv) {
+  const st = $('status'); st.textContent = 'Místní čtení nevyšlo, zkouším AI…';
+  try {
+    const v = await aiRead(cv);
+    if (!plausible(v)) { st.textContent = 'AI čísla nepřečetla spolehlivě. Zkus to znovu nebo je opiš ručně.'; return true; }
+    [$('sys').value, $('dia').value, $('pul').value] = v; checkWarn();
+    st.textContent = 'Přečteno pomocí AI. Zkontroluj čísla podle fotky a ulož.';
+    return true;
+  } catch (e) {
+    st.textContent = 'AI se nepodařilo zavolat (' + e.message + '). Zkontroluj klíč v nastavení dole.'; return true;
+  }
+}
+
 // ---------- čtení z fotky ----------
 function readCanvas(cv) {
   const x = cv.getContext('2d', { willReadFrequently: true }), d = x.getImageData(0, 0, cv.width, cv.height).data;
@@ -159,13 +197,15 @@ function readCanvas(cv) {
   return Seg7.read(g, cv.width, cv.height);
 }
 const plausible = v => v && v.every((n, i) => n >= [60, 30, 30][i] && n <= [280, 200, 250][i]);
-function showResult(cv) {
+async function showResult(cv) {
   const p = $('preview'); p.width = cv.width; p.height = cv.height; p.getContext('2d').drawImage(cv, 0, 0); p.style.display = 'block';
   const r = readCanvas(cv), st = $('status');
   $('dbg').style.display = 'none';
   if (plausible(r.vals)) {
     [$('sys').value, $('dia').value, $('pul').value] = r.vals; checkWarn();
     st.textContent = 'Přečteno. Zkontroluj čísla podle fotky a ulož.';
+  } else if (aiKey() && navigator.onLine !== false && await tryAi(cv)) {
+    // vyplněno umělou inteligencí
   } else {
     st.textContent = 'Čísla se nepodařilo přečíst' + (r.vals ? ' (přečteno ' + r.vals.join('/') + ', mimo rozsah)' : ' (' + (r.error || '?') + ')') + '. Vyfoť displej zblízka, rovně a bez odlesků, nebo čísla opiš ručně. Pod fotkou je černobílý náhled, jak ho appka vidí.';
     const g = new Uint8Array(cv.width * cv.height), d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height);
@@ -197,7 +237,7 @@ $('shot').onclick = () => {
   let first = null;
   for (const z of [1, 1.2, 0.85, 1.4]) {
     const cx = sx + sw / 2, cy = sy + sh / 2, zw = sw * z, zh = sh * z;
-    const out = Math.min(600, Math.round(zw)), cv = document.createElement('canvas');
+    const out = Math.min(900, Math.round(zw)), cv = document.createElement('canvas');
     cv.width = out; cv.height = Math.round(out * zh / zw);
     cv.getContext('2d').drawImage(v, cx - zw / 2, cy - zh / 2, zw, zh, 0, 0, cv.width, cv.height);
     if (!first) first = cv;
@@ -224,7 +264,9 @@ $('cam').addEventListener('change', async e => {
 });
 
 render();
-const VERSION = 4;
+$('aikey').value = aiKey();
+$('aisave').onclick = () => { try { localStorage.setItem('tlak.aikey', $('aikey').value.trim()); $('aisave').textContent = 'Uloženo ✓'; setTimeout(() => $('aisave').textContent = 'Uložit klíč', 1500); } catch (e) {} };
+const VERSION = 5;
 $('ver').textContent = 'verze ' + VERSION;
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').then(reg => {
