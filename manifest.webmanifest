@@ -3,7 +3,7 @@
   "short_name": "Tlak",
   "start_url": "./",
   "display": "standalone",
-  "background_color": "#f6f4f1",
-  "theme_color": "#b3261e",
+  "background_color": "#e8f1fa",
+  "theme_color": "#4fd1ac",
   "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
 }
