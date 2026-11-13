@@ -1,5 +1,5 @@
 // Offline: appka se uloží do cache. Nová verze čeká, dokud ji uživatel v appce nepotvrdí.
-const VERSION = 8;
+const VERSION = 9;
 const CACHE = 'tlak-v' + VERSION;
 const SHELL = ['./', 'index.html', 'seg7.js', 'manifest.webmanifest', 'icon.svg'];
 self.addEventListener('install', e => e.waitUntil(

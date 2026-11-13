@@ -158,9 +158,10 @@ $('export').onclick = () => {
 
 // ---------- AI (Google Gemini, vlastní klíč v telefonu) ----------
 const aiKey = () => { try { return localStorage.getItem('tlak.aikey') || ''; } catch (e) { return ''; } };
+const aiFetch = (url, opt, ms) => { const c = new AbortController(), t = setTimeout(() => c.abort(), ms || 25000); return fetch(url, { ...opt, signal: c.signal }).finally(() => clearTimeout(t)); };
 // zeptá se Googlu, které modely klíč opravdu může použít (názvy se mění)
 async function aiModels() {
-  const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': aiKey() } });
+  const r = await aiFetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': aiKey() } }, 15000);
   if (r.status === 400 || r.status === 401 || r.status === 403) throw new Error('HTTP ' + r.status + ' – klíč zřejmě není platný');
   if (!r.ok) throw new Error('seznam modelů: HTTP ' + r.status);
   const j = await r.json();
@@ -183,18 +184,22 @@ async function aiRead(cv) {
   for (let round = 0; round < 2; round++) {
     const models = await aiModels();
     for (const model of models) {
+      $('status').textContent = 'Čtu pomocí AI… (' + model + ')';
       let r;
       try {
-        r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent', {
+        r = await aiFetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent', {
           method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': aiKey() }, body: JSON.stringify(body) });
-      } catch (e) { lastErr = new Error('bez připojení'); continue; }
+      } catch (e) { lastErr = new Error(e.name === 'AbortError' ? 'timeout (' + model + ')' : 'bez připojení'); continue; }
       if (r.status === 400 || r.status === 401 || r.status === 403) { let m = ''; try { m = (await r.json()).error.message; } catch (e) {} throw new Error('HTTP ' + r.status + ' (' + model + '): ' + m.slice(0, 120)); }
       if (!r.ok) { lastErr = new Error('HTTP ' + r.status + ' (' + model + ')' + (r.status === 503 ? ' – Google je přetížený, zkus to za chvíli' : r.status === 429 ? ' – vyčerpaný limit' : '')); continue; }
+      let t = '', bad = '';
       try {
-        const j = await r.json(), t = j.candidates[0].content.parts.map(p => p.text || '').join('');
+        const j = await r.json(); t = j.candidates[0].content.parts.map(p => p.text || '').join('');
         const o = JSON.parse(t.replace(/```json|```/g, ''));
-        return [o.sys, o.dia, o.pulse].map(Number);
-      } catch (e) { lastErr = new Error('nečekaná odpověď'); }
+        const v = [o.sys, o.dia, o.pulse].map(x => x == null ? NaN : Number(x));
+        if (!plausible(v)) bad = 'odpověď ' + JSON.stringify(o).slice(0, 80) + ' (' + model + ')'; else return v;
+      } catch (e) { lastErr = new Error('nečekaná odpověď (' + model + '): ' + (t || e.message).slice(0, 100)); }
+      if (bad) throw new Error(bad);
     }
     if (round === 0) await new Promise(r => setTimeout(r, 2500));
   }
@@ -291,7 +296,7 @@ $('aikey').value = aiKey();
 const aiState = () => { $('aistate').textContent = aiKey() ? '· klíč uložen, AI zapnutá' : '· vypnuto (chybí klíč)'; };
 aiState();
 $('aisave').onclick = () => { try { localStorage.setItem('tlak.aikey', $('aikey').value.trim()); aiState(); $('aisave').textContent = 'Uloženo ✓'; setTimeout(() => $('aisave').textContent = 'Uložit klíč', 1500); } catch (e) {} };
-const VERSION = 8;
+const VERSION = 9;
 $('ver').textContent = 'verze ' + VERSION;
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').then(reg => {
