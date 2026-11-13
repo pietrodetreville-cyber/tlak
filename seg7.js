@@ -127,6 +127,7 @@
     for (const r of [Math.max(1, Math.round(h * 0.01)), 1, 0]) { last = attempt(gray, w, h, r); if (last.vals) return last; }
     return last;
   }
-  root.Seg7 = { read };
+  function binarize(gray, w, h) { const t = otsu(gray), b = new Uint8Array(w * h); for (let i = 0; i < b.length; i++) b[i] = gray[i] < t ? 1 : 0; return b; }
+  root.Seg7 = { read, binarize };
   if (typeof module !== 'undefined') module.exports = root.Seg7;
 })(typeof window !== 'undefined' ? window : globalThis);

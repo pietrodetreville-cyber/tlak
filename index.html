@@ -44,13 +44,15 @@ td button{padding:4px 10px;background:transparent;color:var(--mut);border:1px so
 </head>
 <body>
 <main>
-<h1>Tlak</h1>
+<h1>Tlak <span class="note" id="ver"></span></h1>
+<div id="upd" class="card hide" style="border-color:var(--acc)"><strong>Je k dispozici nová verze.</strong><div class="row" style="margin-top:8px"><button id="updgo" type="button">Aktualizovat</button></div></div>
 
 <div class="card">
   <button class="big" id="open" type="button">📷 Vyfotit displej</button>
   <label class="note" for="cam" style="display:block;margin-top:10px;text-align:center;text-decoration:underline">nebo vybrat hotovou fotku</label>
   <input id="cam" type="file" accept="image/*" class="hide">
   <div id="status"></div>
+  <canvas id="dbg" style="max-width:100%;border-radius:10px;margin-top:6px;display:none"></canvas>
   <canvas id="preview" style="max-width:100%;border-radius:10px;margin-top:10px;display:none"></canvas>
 </div>
 
@@ -160,11 +162,18 @@ const plausible = v => v && v.every((n, i) => n >= [60, 30, 30][i] && n <= [280,
 function showResult(cv) {
   const p = $('preview'); p.width = cv.width; p.height = cv.height; p.getContext('2d').drawImage(cv, 0, 0); p.style.display = 'block';
   const r = readCanvas(cv), st = $('status');
+  $('dbg').style.display = 'none';
   if (plausible(r.vals)) {
     [$('sys').value, $('dia').value, $('pul').value] = r.vals; checkWarn();
     st.textContent = 'Přečteno. Zkontroluj čísla podle fotky a ulož.';
   } else {
-    st.textContent = 'Čísla se nepodařilo přečíst. Vyfoť displej zblízka, rovně a bez odlesků, nebo čísla opiš ručně.';
+    st.textContent = 'Čísla se nepodařilo přečíst' + (r.vals ? ' (přečteno ' + r.vals.join('/') + ', mimo rozsah)' : ' (' + (r.error || '?') + ')') + '. Vyfoť displej zblízka, rovně a bez odlesků, nebo čísla opiš ručně. Pod fotkou je černobílý náhled, jak ho appka vidí.';
+    const g = new Uint8Array(cv.width * cv.height), d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height);
+    for (let i = 0; i < g.length; i++) g[i] = (d.data[i*4]*0.299 + d.data[i*4+1]*0.587 + d.data[i*4+2]*0.114) | 0;
+    const bin = Seg7.binarize(g, cv.width, cv.height), o = $('dbg'), od = new ImageData(cv.width, cv.height);
+    o.width = cv.width; o.height = cv.height;
+    for (let i = 0; i < bin.length; i++) { const v = bin[i] ? 0 : 255; od.data[i*4] = od.data[i*4+1] = od.data[i*4+2] = v; od.data[i*4+3] = 255; }
+    o.getContext('2d').putImageData(od, 0, 0); o.style.display = 'block'; return;
   }
 }
 
@@ -207,7 +216,19 @@ $('cam').addEventListener('change', async e => {
 });
 
 render();
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+const VERSION = 3;
+$('ver').textContent = 'verze ' + VERSION;
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    const offer = w => { $('upd').classList.remove('hide'); $('updgo').onclick = () => w.postMessage('skip'); };
+    if (reg.waiting && navigator.serviceWorker.controller) offer(reg.waiting);
+    reg.addEventListener('updatefound', () => { const w = reg.installing; w.addEventListener('statechange', () => { if (w.state === 'installed' && navigator.serviceWorker.controller) offer(w); }); });
+    reg.update().catch(() => {});
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
+  }).catch(() => {});
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloaded) return; reloaded = true; location.reload(); });
+}
 </script>
 </body>
 </html>
