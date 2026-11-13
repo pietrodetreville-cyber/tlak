@@ -164,15 +164,24 @@ async function aiRead(cv) {
     { text: 'Na fotce je displej domácího tonometru (krevní tlak). Přečti tři čísla: horní tlak (SYS), dolní tlak (DIA) a tep (PULSE). Odpověz jen JSON {"sys":číslo,"dia":číslo,"pulse":číslo}. Když číslo nejde spolehlivě přečíst, dej null.' },
     { inline_data: { mime_type: 'image/jpeg', data: b64 } }] }],
     generationConfig: { responseMimeType: 'application/json', temperature: 0 } };
-  let lastErr;
-  for (const model of ['gemini-flash-latest', 'gemini-2.5-flash']) {
-    const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': aiKey() }, body: JSON.stringify(body) });
-    if (r.status === 404) { lastErr = new Error('model'); continue; }
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const j = await r.json(), t = j.candidates && j.candidates[0] && j.candidates[0].content.parts.map(p => p.text || '').join('');
-    const o = JSON.parse(t.replace(/```json|```/g, ''));
-    return [o.sys, o.dia, o.pulse].map(Number);
+  let lastErr = new Error('žádný model');
+  // přetížený (503), limit (429) nebo neexistující model (404) -> další model, případně druhé kolo
+  for (let round = 0; round < 2; round++) {
+    for (const model of ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-2.5-flash-lite']) {
+      let r;
+      try {
+        r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': aiKey() }, body: JSON.stringify(body) });
+      } catch (e) { lastErr = new Error('bez připojení'); continue; }
+      if (r.status === 400 || r.status === 401 || r.status === 403) throw new Error('HTTP ' + r.status + ' – klíč zřejmě není platný');
+      if (!r.ok) { lastErr = new Error('HTTP ' + r.status + (r.status === 503 ? ' – Google je přetížený, zkus to za chvíli' : r.status === 429 ? ' – vyčerpaný limit' : '')); continue; }
+      try {
+        const j = await r.json(), t = j.candidates[0].content.parts.map(p => p.text || '').join('');
+        const o = JSON.parse(t.replace(/```json|```/g, ''));
+        return [o.sys, o.dia, o.pulse].map(Number);
+      } catch (e) { lastErr = new Error('nečekaná odpověď'); }
+    }
+    if (round === 0) await new Promise(r => setTimeout(r, 2500));
   }
   throw lastErr;
 }
@@ -185,7 +194,7 @@ async function tryAi(cv) {
     st.textContent = 'Přečteno pomocí AI. Zkontroluj čísla podle fotky a ulož.';
     return true;
   } catch (e) {
-    st.textContent = 'AI se nepodařilo zavolat (' + e.message + '). Zkontroluj klíč v nastavení dole.'; return true;
+    st.textContent = 'AI se nepodařilo zavolat (' + e.message + '). Důvod je výše; zkontroluj klíč v nastavení dole.'; return true;
   }
 }
 
@@ -266,7 +275,7 @@ $('cam').addEventListener('change', async e => {
 render();
 $('aikey').value = aiKey();
 $('aisave').onclick = () => { try { localStorage.setItem('tlak.aikey', $('aikey').value.trim()); $('aisave').textContent = 'Uloženo ✓'; setTimeout(() => $('aisave').textContent = 'Uložit klíč', 1500); } catch (e) {} };
-const VERSION = 5;
+const VERSION = 6;
 $('ver').textContent = 'verze ' + VERSION;
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').then(reg => {
