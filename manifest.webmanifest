@@ -1,0 +1,9 @@
+{
+  "name": "Tlak",
+  "short_name": "Tlak",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f6f4f1",
+  "theme_color": "#b3261e",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
