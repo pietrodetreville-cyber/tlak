@@ -26,6 +26,22 @@
     return t;
   }
 
+  // lokální práh: pixel je tmavý, když je výrazně tmavší než jeho okolí (odolné proti stínům)
+  function adaptive(g, w, h) {
+    const R = Math.max(8, Math.round(Math.min(w, h) * 0.09)), W1 = w + 1, I = new Float64Array(W1 * (h + 1));
+    for (let y = 0; y < h; y++) { let row = 0; for (let x = 0; x < w; x++) { row += g[y * w + x]; I[(y + 1) * W1 + x + 1] = I[y * W1 + x + 1] + row; } }
+    const bin = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      const y0 = Math.max(0, y - R), y1 = Math.min(h, y + R + 1);
+      for (let x = 0; x < w; x++) {
+        const x0 = Math.max(0, x - R), x1 = Math.min(w, x + R + 1);
+        const m = (I[y1 * W1 + x1] - I[y0 * W1 + x1] - I[y1 * W1 + x0] + I[y0 * W1 + x0]) / ((x1 - x0) * (y1 - y0));
+        bin[y * w + x] = g[y * w + x] < m * 0.78 ? 1 : 0;
+      }
+    }
+    return bin;
+  }
+
   function dilate(bin, w, h, r) {
     const tmp = new Uint8Array(w * h), out = new Uint8Array(w * h);
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
@@ -84,8 +100,7 @@
   }
 
   function attempt(gray, w, h, r) {
-    const t = otsu(gray), bin = new Uint8Array(w * h);
-    for (let i = 0; i < bin.length; i++) bin[i] = gray[i] < t ? 1 : 0;
+    const bin = adaptive(gray, w, h);
     const comps = components(r ? dilate(bin, w, h, r) : bin, w, h);
     // kandidáti na číslice
     let cand = comps.filter(c => { const ch = c.y1 - c.y0 + 1, cw = c.x1 - c.x0 + 1; return ch > h * 0.09 && ch < h * 0.4 && cw < ch * 1.0 && cw > ch * 0.12; });
@@ -107,6 +122,14 @@
     const vals = [];
     for (const row of good) {
       row.items.sort((a, b) => a.x0 - b.x0);
+      // odděl cizí prvky (stupnice apod.): číslice stojí těsně vedle sebe
+      const groups = [[row.items[0]]];
+      for (let i = 1; i < row.items.length; i++) {
+        const p = row.items[i - 1], c = row.items[i];
+        if (c.x0 - p.x1 > row.h * 0.35) groups.push([c]); else groups[groups.length - 1].push(c);
+      }
+      groups.sort((a, b) => b.length - a.length);
+      row.items = groups[0];
       let s = '';
       for (const c of row.items) {
         // zpřesni rámeček na nedilatované pixely
@@ -127,7 +150,7 @@
     for (const r of [Math.max(1, Math.round(h * 0.01)), 1, 0]) { last = attempt(gray, w, h, r); if (last.vals) return last; }
     return last;
   }
-  function binarize(gray, w, h) { const t = otsu(gray), b = new Uint8Array(w * h); for (let i = 0; i < b.length; i++) b[i] = gray[i] < t ? 1 : 0; return b; }
+  function binarize(gray, w, h) { return adaptive(gray, w, h); }
   root.Seg7 = { read, binarize };
   if (typeof module !== 'undefined') module.exports = root.Seg7;
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -192,10 +192,18 @@ $('shot').onclick = () => {
   const v = $('video'), vw = v.videoWidth, vh = v.videoHeight, c = v.getBoundingClientRect(), f = $('frame').getBoundingClientRect();
   const k = Math.max(c.width / vw, c.height / vh), ox = (vw * k - c.width) / 2, oy = (vh * k - c.height) / 2;
   const sx = (f.left - c.left + ox) / k, sy = (f.top - c.top + oy) / k, sw = f.width / k, sh = f.height / k;
-  const out = Math.min(600, Math.round(sw)), cv = document.createElement('canvas');
-  cv.width = out; cv.height = Math.round(out * sh / sw);
-  cv.getContext('2d').drawImage(v, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
-  closeVf(); showResult(cv);
+  closeVf();
+  // zkusí rámeček i o něco větší a menší; první rozumný výsledek vyhrává
+  let first = null;
+  for (const z of [1, 1.2, 0.85, 1.4]) {
+    const cx = sx + sw / 2, cy = sy + sh / 2, zw = sw * z, zh = sh * z;
+    const out = Math.min(600, Math.round(zw)), cv = document.createElement('canvas');
+    cv.width = out; cv.height = Math.round(out * zh / zw);
+    cv.getContext('2d').drawImage(v, cx - zw / 2, cy - zh / 2, zw, zh, 0, 0, cv.width, cv.height);
+    if (!first) first = cv;
+    if (plausible(readCanvas(cv).vals)) { showResult(cv); return; }
+  }
+  showResult(first);
 };
 // hotová fotka: zkusí celý snímek i několik výřezů
 $('cam').addEventListener('change', async e => {
@@ -216,7 +224,7 @@ $('cam').addEventListener('change', async e => {
 });
 
 render();
-const VERSION = 3;
+const VERSION = 4;
 $('ver').textContent = 'verze ' + VERSION;
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').then(reg => {
