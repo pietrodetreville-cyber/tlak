@@ -111,7 +111,6 @@ td.ph button{padding:4px 8px;font-size:1rem}
 <div class="card">
   <div class="row" style="align-items:center;margin-bottom:8px">
     <strong style="flex:2">Záznamy (<span id="count">0</span>)</strong>
-    <button class="sec" id="export">Export pro Excel</button>
   </div>
   <table><thead><tr><th>Kdy</th><th>Tlak</th><th>Tep</th><th></th></tr></thead><tbody id="list"></tbody></table>
   <p class="note" id="empty">Zatím nic. Vyfoť displej nebo čísla zadej ručně.</p>
@@ -226,8 +225,7 @@ $('list').addEventListener('click', async e => {
 $('bigclose').onclick = $('big').onclick = e => { if (e.target.id === 'bigimg') return; $('big').classList.add('hide'); if (bigUrl) URL.revokeObjectURL(bigUrl); };
 
 
-$('export2').onclick = () => $('export').click();
-$('export').onclick = () => {
+$('export2').onclick = () => {
   if (!records.length) return alert('Zatím není co exportovat.');
   const sorted = [...records].sort((a, b) => a.when.localeCompare(b.when));
   const q = s => '"' + String(s).replace(/"/g, '""') + '"';
@@ -493,7 +491,7 @@ $('aikey').value = aiKey();
 const aiState = () => { $('aistate').textContent = aiKey() ? '· klíč uložen, AI zapnutá' : '· vypnuto (chybí klíč)'; };
 aiState();
 $('aisave').onclick = () => { try { localStorage.setItem('tlak.aikey', $('aikey').value.trim()); aiState(); $('aisave').textContent = 'Uloženo ✓'; setTimeout(() => $('aisave').textContent = 'Uložit klíč', 1500); } catch (e) {} };
-const VERSION = 15;
+const VERSION = 16;
 if (navigator.storage && navigator.storage.estimate) navigator.storage.estimate().then(s => { $('storeinfo').textContent = 'Zabráno ' + (s.usage / 1048576).toFixed(1) + ' MB z asi ' + Math.round(s.quota / 1048576) + ' MB dostupných.'; }).catch(() => {});
 $('ver').textContent = 'verze ' + VERSION; adminUI(); $('ver2').textContent = 'verze ' + VERSION;
 if ('serviceWorker' in navigator) {
