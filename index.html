@@ -55,6 +55,12 @@ nav button.on{background:var(--acc);color:#fff}
 .stats div{background:var(--bg);border-radius:10px;padding:8px;text-align:center}
 .stats b{display:block;font-size:1.2rem}
 #tip{min-height:2.6em;font-size:.9rem;margin-top:6px}
+td.ph{width:44px;text-align:right}
+td.ph button{padding:4px 8px;font-size:1rem}
+#big.hide{display:none}
+#big{position:fixed;inset:0;background:#000d;z-index:20;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:16px;gap:10px}
+#big img{max-width:100%;max-height:78vh;border-radius:10px}
+#big div{color:#fff;font-size:.9rem;text-align:center}
 .note{color:var(--mut);font-size:.82rem}
 .hide{display:none}
 </style>
@@ -75,6 +81,8 @@ nav button.on{background:var(--acc);color:#fff}
   <canvas id="preview" style="max-width:100%;border-radius:10px;margin-top:10px;display:none"></canvas>
   <canvas id="dbg" style="max-width:100%;border-radius:10px;margin-top:6px;display:none"></canvas>
 </div>
+
+<div id="big" class="hide"><img id="bigimg" alt="Fotka měření"><div id="bigcap"></div><button type="button" class="sec" style="color:#fff;border-color:#fff8" id="bigclose">Zavřít</button></div>
 
 <div id="vf" class="hide">
   <video id="video" playsinline muted></video>
@@ -103,7 +111,7 @@ nav button.on{background:var(--acc);color:#fff}
     <strong style="flex:2">Záznamy (<span id="count">0</span>)</strong>
     <button class="sec" id="export">Export pro Excel</button>
   </div>
-  <table><thead><tr><th>Kdy</th><th>Tlak</th><th>Tep</th></tr></thead><tbody id="list"></tbody></table>
+  <table><thead><tr><th>Kdy</th><th>Tlak</th><th>Tep</th><th></th></tr></thead><tbody id="list"></tbody></table>
   <p class="note" id="empty">Zatím nic. Vyfoť displej nebo čísla zadej ručně.</p>
 
   <p class="note">Uložené záznamy už nejdou mazat. Data jsou jen v tomto telefonu, proto občas stáhni export (CSV) jako zálohu. Otevřeš ho v Excelu.</p>
@@ -128,7 +136,8 @@ nav button.on{background:var(--acc);color:#fff}
 </div>
   <div class="card">
     <strong>Data</strong>
-    <p class="note">Záznamy jsou jen v tomto telefonu. Záložní kopii stáhneš jako soubor pro Excel.</p>
+    <p class="note">Záznamy a fotky měření jsou jen v tomto telefonu. K každému uloženému měření se uchovává fotka displeje s časem pořízení. Excelový export fotky neobsahuje, jen hodnoty.</p>
+    <div id="storeinfo" class="note"></div>
     <button class="sec" id="export2" type="button">Export pro Excel</button>
   </div>
   <p class="note" style="text-align:center">Tlak · <span id="ver2"></span></p>
@@ -151,7 +160,7 @@ function render() {
   const sorted = [...records].sort((a, b) => b.when.localeCompare(a.when));
   $('list').innerHTML = sorted.map(r =>
     `<tr><td>${fmt(r.when)}${r.note ? `<div class="note">${esc(r.note)}</div>` : ''}</td>
-     <td class="n">${r.sys}/${r.dia}</td><td class="n">${r.pul}</td></tr>`).join('');
+     <td class="n">${r.sys}/${r.dia}</td><td class="n">${r.pul}</td><td class="ph">${r.photo ? `<button class="sec" data-photo="${r.id}" aria-label="Zobrazit fotku">📷</button>` : ''}</td></tr>`).join('');
   renderChart();
   $('count').textContent = records.length;
   $('empty').style.display = records.length ? 'none' : '';
@@ -163,18 +172,46 @@ function checkWarn() {
 }
 ['sys','dia'].forEach(i => $(i).addEventListener('input', checkWarn));
 
+// ---------- fotky v IndexedDB ----------
+let pending = null; // { canvas, shotAt }
+const idb = () => new Promise((res, rej) => {
+  const q = indexedDB.open('tlak-photos', 1);
+  q.onupgradeneeded = () => q.result.createObjectStore('p');
+  q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error);
+});
+const idbPut = async (id, val) => { const db = await idb(); return new Promise((res, rej) => { const t = db.transaction('p', 'readwrite'); t.objectStore('p').put(val, id); t.oncomplete = res; t.onerror = () => rej(t.error); }); };
+const idbGet = async id => { const db = await idb(); return new Promise((res, rej) => { const q = db.transaction('p').objectStore('p').get(id); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); };
+const toBlob = cv => new Promise(res => cv.toBlob(res, 'image/jpeg', 0.82));
+if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+
 function resetForm() {
+  pending = null;
   $('form').reset(); $('when').value = nowLocal(); $('warn').textContent = '';
   $('preview').style.display = 'none'; $('status').textContent = '';
 }
 resetForm();
 $('clear').onclick = resetForm;
 
-$('form').addEventListener('submit', e => {
+$('form').addEventListener('submit', async e => {
   e.preventDefault();
-  records.push({ id: Date.now().toString(36), when: $('when').value, sys: +$('sys').value, dia: +$('dia').value, pul: +$('pul').value, note: $('note').value.trim() });
-  save(); render(); resetForm();
+  const rec = { id: Date.now().toString(36), when: $('when').value, sys: +$('sys').value, dia: +$('dia').value, pul: +$('pul').value, note: $('note').value.trim() };
+  if (pending) {
+    try { await Promise.race([idbPut(rec.id, { blob: await toBlob(pending.canvas), shotAt: pending.shotAt }), new Promise((_, no) => setTimeout(() => no(new Error('timeout')), 8000))]); rec.photo = true; rec.shotAt = pending.shotAt; }
+    catch (err) { alert('Fotku se nepodařilo uložit, měření se uloží bez ní.'); }
+  }
+  records.push(rec); save(); render(); resetForm();
 });
+let bigUrl = null;
+$('list').addEventListener('click', async e => {
+  const id = e.target.dataset.photo; if (!id) return;
+  try {
+    const p = await idbGet(id), r = records.find(x => x.id === id); if (!p) return alert('Fotka není k dispozici.');
+    bigUrl = URL.createObjectURL(p.blob); $('bigimg').src = bigUrl;
+    $('bigcap').textContent = r.sys + '/' + r.dia + ', tep ' + r.pul + ' · fotka pořízena ' + fmt(new Date(p.shotAt).toISOString());
+    $('big').classList.remove('hide');
+  } catch (err) { alert('Fotku se nepodařilo načíst.'); }
+});
+$('bigclose').onclick = $('big').onclick = e => { if (e.target.id === 'bigimg') return; $('big').classList.add('hide'); if (bigUrl) URL.revokeObjectURL(bigUrl); };
 
 
 $('export2').onclick = () => $('export').click();
@@ -379,8 +416,10 @@ $('shot').onclick = () => {
   }
   closeVf();
   // první rozumný výsledek vyhrává; s AI se posílá první snímek
+  pending = { canvas: shots[3] || shots[0], shotAt: Date.now() };
   if (!aiKey()) for (const cv of shots) if (plausible(readCanvas(cv).vals)) { showResult(cv); return; }
   const first = shots[0];
+  pending = { canvas: shots[3] || first, shotAt: Date.now() };
   showResult(first);
 };
 // hotová fotka: zkusí celý snímek i několik výřezů
@@ -390,6 +429,7 @@ $('cam').addEventListener('change', async e => {
     const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }), k = Math.min(1, 1200 / Math.max(bmp.width, bmp.height));
     const W = Math.round(bmp.width * k), H = Math.round(bmp.height * k);
     const full = document.createElement('canvas'); full.width = W; full.height = H; full.getContext('2d').drawImage(bmp, 0, 0, W, H);
+    pending = { canvas: full, shotAt: file.lastModified || Date.now() };
     if (aiKey()) { showResult(full); return; }
     const tries = [[0, 0, 1, 1]];
     for (const s of [0.7, 0.5, 0.35]) for (const cy of [0.35, 0.5, 0.65]) for (const cx of [0.35, 0.5, 0.65]) tries.push([cx - s / 2, cy - s / 2, s, s]);
@@ -407,7 +447,8 @@ $('aikey').value = aiKey();
 const aiState = () => { $('aistate').textContent = aiKey() ? '· klíč uložen, AI zapnutá' : '· vypnuto (chybí klíč)'; };
 aiState();
 $('aisave').onclick = () => { try { localStorage.setItem('tlak.aikey', $('aikey').value.trim()); aiState(); $('aisave').textContent = 'Uloženo ✓'; setTimeout(() => $('aisave').textContent = 'Uložit klíč', 1500); } catch (e) {} };
-const VERSION = 12;
+const VERSION = 13;
+if (navigator.storage && navigator.storage.estimate) navigator.storage.estimate().then(s => { $('storeinfo').textContent = 'Zabráno ' + (s.usage / 1048576).toFixed(1) + ' MB z asi ' + Math.round(s.quota / 1048576) + ' MB dostupných.'; }).catch(() => {});
 $('ver').textContent = 'verze ' + VERSION; $('ver2').textContent = 'verze ' + VERSION;
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').then(reg => {
