@@ -159,8 +159,11 @@ $('export').onclick = () => {
 // ---------- AI (Google Gemini, vlastní klíč v telefonu) ----------
 const aiKey = () => { try { return localStorage.getItem('tlak.aikey') || ''; } catch (e) { return ''; } };
 const aiFetch = (url, opt, ms) => { const c = new AbortController(), t = setTimeout(() => c.abort(), ms || 25000); return fetch(url, { ...opt, signal: c.signal }).finally(() => clearTimeout(t)); };
-// zeptá se Googlu, které modely klíč opravdu může použít (názvy se mění)
+// seznam modelů se pamatuje den; naposledy úspěšný model jde první
+const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
 async function aiModels() {
+  try { const c = JSON.parse(lsGet('tlak.aimodels') || 'null'); if (c && Date.now() - c.t < 864e5 && c.list.length) return withGood(c.list); } catch (e) {}
   const r = await aiFetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': aiKey() } }, 15000);
   if (r.status === 400 || r.status === 401 || r.status === 403) throw new Error('HTTP ' + r.status + ' – klíč zřejmě není platný');
   if (!r.ok) throw new Error('seznam modelů: HTTP ' + r.status);
@@ -168,11 +171,34 @@ async function aiModels() {
   const ok = (j.models || []).filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
     .map(m => m.name.replace('models/', ''))
     .filter(n => /^gemini-/.test(n) && /flash/.test(n) && !/image|tts|live|audio|embed|robotics|computer|native|exp|thinking|customtools/.test(n));
-  const score = n => (/preview/.test(n) ? 0 : 1000) + (parseFloat((n.match(/gemini-(d+(?:.d+)?)/) || [0, 0])[1]) * 10) - (/lite/.test(n) ? 5 : 0) + (/latest/.test(n) ? 0.5 : 0);
+  const score = n => (/preview/.test(n) ? 0 : 1000) + (parseFloat((n.match(/gemini-(\d+(?:\.\d+)?)/) || [0, 0])[1]) * 10) - (/lite/.test(n) ? 5 : 0) + (/latest/.test(n) ? 0.5 : 0);
   ok.sort((a, b) => score(b) - score(a));
   if (!ok.length) throw new Error('klíč nemá přístup k žádnému modelu Gemini Flash');
-  return ok.slice(0, 4);
+  lsSet('tlak.aimodels', JSON.stringify({ t: Date.now(), list: ok.slice(0, 4) }));
+  return withGood(ok.slice(0, 4));
 }
+const withGood = list => { const g = lsGet('tlak.aigood'); return g && list.includes(g) ? [g, ...list.filter(x => x !== g)] : list; };
+
+async function callModel(model, body) {
+  let r;
+  try {
+    r = await aiFetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': aiKey() }, body: JSON.stringify(body) }, 20000);
+  } catch (e) { throw new Error(e.name === 'AbortError' ? 'timeout (' + model + ')' : 'bez připojení'); }
+  if (r.status === 400 || r.status === 401 || r.status === 403) { let m = ''; try { m = (await r.json()).error.message; } catch (e) {} const er = new Error('HTTP ' + r.status + ' (' + model + '): ' + m.slice(0, 120)); er.fatal = true; throw er; }
+  if (r.status === 404) lsSet('tlak.aimodels', '');
+  if (!r.ok) throw new Error('HTTP ' + r.status + ' (' + model + ')' + (r.status === 503 ? ' – Google je přetížený' : r.status === 429 ? ' – vyčerpaný limit' : ''));
+  let t = '';
+  try {
+    const j = await r.json(); t = j.candidates[0].content.parts.map(p => p.text || '').join('');
+    const o = JSON.parse(t.replace(/```json|```/g, ''));
+    const v = [o.sys, o.dia, o.pulse].map(x => x == null ? NaN : Number(x));
+    if (!plausible(v)) throw new Error('odpověď ' + JSON.stringify(o).slice(0, 80) + ' (' + model + ')');
+    lsSet('tlak.aigood', model);
+    return v;
+  } catch (e) { throw /^odpověď/.test(e.message) ? e : new Error('nečekaná odpověď (' + model + '): ' + (t || e.message).slice(0, 100)); }
+}
+
 async function aiRead(cv) {
   const b64 = cv.toDataURL('image/jpeg', 0.9).split(',')[1];
   const body = { contents: [{ parts: [
@@ -180,31 +206,22 @@ async function aiRead(cv) {
     { inline_data: { mime_type: 'image/jpeg', data: b64 } }] }],
     generationConfig: { responseMimeType: 'application/json', temperature: 0 } };
   let lastErr = new Error('žádný model');
-  // přetížený (503), limit (429) nebo neexistující model (404) -> další model, případně druhé kolo
   for (let round = 0; round < 2; round++) {
-    const models = await aiModels();
-    for (const model of models) {
-      $('status').textContent = 'Čtu pomocí AI… (' + model + ')';
-      let r;
-      try {
-        r = await aiFetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': aiKey() }, body: JSON.stringify(body) });
-      } catch (e) { lastErr = new Error(e.name === 'AbortError' ? 'timeout (' + model + ')' : 'bez připojení'); continue; }
-      if (r.status === 400 || r.status === 401 || r.status === 403) { let m = ''; try { m = (await r.json()).error.message; } catch (e) {} throw new Error('HTTP ' + r.status + ' (' + model + '): ' + m.slice(0, 120)); }
-      if (!r.ok) { lastErr = new Error('HTTP ' + r.status + ' (' + model + ')' + (r.status === 503 ? ' – Google je přetížený, zkus to za chvíli' : r.status === 429 ? ' – vyčerpaný limit' : '')); continue; }
-      let t = '', bad = '';
-      try {
-        const j = await r.json(); t = j.candidates[0].content.parts.map(p => p.text || '').join('');
-        const o = JSON.parse(t.replace(/```json|```/g, ''));
-        const v = [o.sys, o.dia, o.pulse].map(x => x == null ? NaN : Number(x));
-        if (!plausible(v)) bad = 'odpověď ' + JSON.stringify(o).slice(0, 80) + ' (' + model + ')'; else return v;
-      } catch (e) { lastErr = new Error('nečekaná odpověď (' + model + '): ' + (t || e.message).slice(0, 100)); }
-      if (bad) throw new Error(bad);
+    $('status').textContent = 'Čtu pomocí AI…' + (round ? ' (druhý pokus)' : '');
+    const models = (await aiModels()).slice(0, 3);
+    // modely se ptají naráz, vyhrává první použitelná odpověď
+    try { return await Promise.any(models.map(m => callModel(m, body))); }
+    catch (e) {
+      const errs = e.errors || [e];
+      const fatal = errs.find(x => x.fatal); if (fatal) throw fatal;
+      lastErr = errs.find(x => /^odpověď/.test(x.message)) || errs[0];
+      if (/^odpověď/.test(lastErr.message)) throw lastErr;
     }
-    if (round === 0) await new Promise(r => setTimeout(r, 2500));
+    if (round === 0) await new Promise(r => setTimeout(r, 2000));
   }
   throw lastErr;
 }
+
 // ---------- čtení z fotky ----------
 function readCanvas(cv) {
   const x = cv.getContext('2d', { willReadFrequently: true }), d = x.getImageData(0, 0, cv.width, cv.height).data;
@@ -298,7 +315,7 @@ $('aikey').value = aiKey();
 const aiState = () => { $('aistate').textContent = aiKey() ? '· klíč uložen, AI zapnutá' : '· vypnuto (chybí klíč)'; };
 aiState();
 $('aisave').onclick = () => { try { localStorage.setItem('tlak.aikey', $('aikey').value.trim()); aiState(); $('aisave').textContent = 'Uloženo ✓'; setTimeout(() => $('aisave').textContent = 'Uložit klíč', 1500); } catch (e) {} };
-const VERSION = 10;
+const VERSION = 11;
 $('ver').textContent = 'verze ' + VERSION;
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').then(reg => {
